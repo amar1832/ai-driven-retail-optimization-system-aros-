@@ -1,0 +1,133 @@
+import pandas as pd
+import matplotlib.pyplot as plt
+import seaborn as sns
+from sklearn.ensemble import RandomForestRegressor
+from sklearn.preprocessing import LabelEncoder
+from sklearn.model_selection import train_test_split, GridSearchCV
+from sklearn.metrics import mean_squared_error
+import joblib
+import numpy as np
+import warnings
+
+warnings.filterwarnings('ignore')
+
+class DataProcessingError(Exception):
+    pass
+
+def load_and_preprocess_data(demand_path, inventory_path, pricing_path):
+    try:
+        demand_data = pd.read_csv(demand_path)
+        inventory_data = pd.read_csv(inventory_path)
+        pricing_data = pd.read_csv(pricing_path)
+
+        demand_data = demand_data.dropna(subset=['Sales Quantity', 'Promotions'], how='all')
+        inventory_data = inventory_data.dropna(subset=['Stock Levels', 'Supplier Lead Time (days)'], how='all')
+        pricing_data = pricing_data.dropna(subset=['Price'], how='all')
+
+        for df in [demand_data, inventory_data, pricing_data]:
+            df['Product ID'] = df['Product ID'].astype(str).str.strip()
+            df['Store ID'] = df['Store ID'].astype(str).str.strip()
+
+        if 'Date' in demand_data.columns:
+            demand_data['Date'] = pd.to_datetime(demand_data['Date'], errors='coerce')
+            demand_data['Month'] = demand_data['Date'].dt.month
+            demand_data['DayOfWeek'] = demand_data['Date'].dt.dayofweek
+
+        data = pd.merge(demand_data, inventory_data, on=['Product ID', 'Store ID'], how='left')
+        data = pd.merge(data, pricing_data, on=['Product ID', 'Store ID'], how='left')
+
+        numerical_cols = ['Sales Quantity', 'Discounts', 'Sales Volume', 'Return Rate (%)', 'Storage Cost',
+                          'Elasticity Index', 'Stock Levels', 'Supplier Lead Time (days)',
+                          'Stockout Frequency', 'Reorder Point', 'Order Fulfillment Time (days)',
+                          'Warehouse Capacity', 'Month', 'DayOfWeek', 'Price']
+        for col in numerical_cols:
+            if col in data.columns:
+                data[col] = pd.to_numeric(data[col], errors='coerce').fillna(data[col].mean())
+
+        categorical_cols = ['Promotions', 'Customer Segments', 'Seasonality Factors', 'External Factors',
+                            'Demand Trend']
+        for col in categorical_cols:
+            if col in data.columns:
+                le = LabelEncoder()
+                data[col] = data[col].astype(str).fillna('Unknown')
+                data[col] = le.fit_transform(data[col])
+
+        if 'Expiry Date' in data.columns:
+            data['Expiry Date'] = pd.to_datetime(data['Expiry Date'], errors='coerce')
+            data['Days to Expiry'] = (data['Expiry Date'] - pd.Timestamp.today()).dt.days
+            data['Days to Expiry'] = data['Days to Expiry'].fillna(9999)
+
+        data['High_Return_Risk'] = (data['Return Rate (%)'] > 10).astype(int)
+        data['Price_Elasticity_Type'] = data['Elasticity Index'].apply(lambda x: 'Elastic' if x > 1 else 'Inelastic')
+        if 'Customer Reviews' in data.columns and 'Price' in data.columns:
+            data['Value_for_Money_Score'] = (data['Sales Volume'] / data['Price']) + data['Customer Reviews'] - data['Return Rate (%)']
+
+        return data
+
+    except FileNotFoundError as e:
+        raise DataProcessingError(f"File error: {e}")
+    except Exception as e:
+        raise DataProcessingError(f"Data preprocessing failed: {str(e)}")
+
+def train_demand_model(data):
+    features = ['Promotions', 'Discounts', 'Seasonality Factors',
+                'External Factors', 'Demand Trend', 'Customer Segments']
+    if 'Month' in data.columns:
+        features.extend(['Month', 'DayOfWeek'])
+    if 'Price' in data.columns:
+        features.append('Price')
+
+    target = 'Sales Quantity'
+
+    X = data[features].dropna()
+    y = data.loc[X.index, target]
+
+    X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.2, random_state=42)
+    param_grid = {'n_estimators': [100, 200], 'max_depth': [10, 20, None], 'min_samples_split': [2, 5]}
+    model = RandomForestRegressor(random_state=42)
+    grid_search = GridSearchCV(model, param_grid, cv=3, scoring='neg_mean_squared_error', n_jobs=-1)
+    grid_search.fit(X_train, y_train)
+
+    y_pred = grid_search.predict(X_test)
+    mse = mean_squared_error(y_test, y_pred)
+    print(f"Best parameters for demand model: {grid_search.best_params_}")
+    print(f"Mean Squared Error on test set: {mse:.2f}")
+
+
+    joblib.dump(grid_search.best_estimator_, "demand_model.pkl")
+
+
+    results_df = X_test.copy()
+    results_df['Actual'] = y_test
+    results_df['Predicted'] = y_pred
+    results_df.to_csv("demand_predictions.csv", index=False)
+
+
+    importances = grid_search.best_estimator_.feature_importances_
+    feature_imp_df = pd.DataFrame({"Feature": features, "Importance": importances})
+    feature_imp_df.sort_values("Importance", ascending=False, inplace=True)
+    plt.figure(figsize=(10, 6))
+    sns.barplot(x="Importance", y="Feature", data=feature_imp_df)
+    plt.title("Feature Importance for Demand Model")
+    plt.tight_layout()
+    plt.savefig("feature_importance.png")
+    plt.close()
+
+
+    plt.figure(figsize=(8, 6))
+    sns.scatterplot(x=y_test, y=y_pred, alpha=0.6)
+    plt.xlabel("Actual Sales Quantity")
+    plt.ylabel("Predicted Sales Quantity")
+    plt.title("Actual vs Predicted Sales Quantity")
+    plt.tight_layout()
+    plt.savefig("actual_vs_predicted.png")
+    plt.close()
+
+    return grid_search.best_estimator_
+
+if _name_ == "_main_":
+    try:
+        data = load_and_preprocess_data("C:\\Users\\avgc9\\OneDrive\\Desktop\\acc dataset 1\\demand_forecasting.csv", "C:\\Users\\avgc9\\OneDrive\\Desktop\\acc dataset 1\\inventory_monitoring.csv", "C:\\Users\\avgc9\\OneDrive\\Desktop\\acc dataset 1\\pricing_optimization.csv")
+        model = train_demand_model(data)
+    except DataProcessingError as e:
+        print(e)
