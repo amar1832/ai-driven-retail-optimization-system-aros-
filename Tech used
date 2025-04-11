@@ -1,0 +1,14 @@
+Python lib:
+pandas : for data loading, cleaning , merging and preprocessing
+Numpy : Numerical computations and array operations 
+Matplotlib : Visualization
+Seaborn :	Enhanced data visualization
+
+ Machine Learning & Model Training:
+scikit-learn: End-to-end machine learning workflow:
+- RandomForestRegressor: Demand forecasting model
+- LabelEncoder: Encoding categorical variables
+- train_test_split: Splitting data into training/test sets
+- GridSearchCV: Hyperparameter tuning
+- mean_squared_error: Model evaluation
+
